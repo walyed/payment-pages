@@ -129,6 +129,12 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
       return;
     }
 
+    // Validate email
+    if (!formData.email) {
+      alert('Please enter your email address.');
+      return;
+    }
+
     // Get payment amount from user
     const amount = prompt('Enter payment amount in USD (e.g., 100 for $100):');
     if (!amount || isNaN(Number(amount))) {
@@ -139,6 +145,8 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
     setIsProcessing(true);
 
     try {
+      console.log('Submitting payment...', { formData, amount });
+
       // Call backend API to process bank payment
       const response = await fetch('/api/create-bank-payment', {
         method: 'POST',
@@ -151,14 +159,24 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
         }),
       });
 
-      const data = await response.json();
+      console.log('Response status:', response.status);
+      
+      const text = await response.text();
+      console.log('Response text:', text);
+
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error('Invalid response from server: ' + text);
+      }
 
       if (!response.ok) {
         throw new Error(data.error || 'Payment failed');
       }
 
       // Success!
-      alert(`Payment successful! Charge ID: ${data.chargeId}`);
+      alert(`✅ Payment successful!\n\nCharge ID: ${data.chargeId}\nCustomer ID: ${data.customerId}\n\nCheck your Stripe Dashboard to see the payment.`);
       console.log('Payment details:', data);
       
       // Reset form
