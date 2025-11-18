@@ -17,62 +17,74 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    // Validate Stripe key
     if (!process.env.STRIPE_SECRET_KEY) {
-      throw new Error('Stripe secret key not configured');
+      console.error('STRIPE_SECRET_KEY is not set');
+      return res.status(500).json({ 
+        success: false,
+        error: 'Stripe not configured on server' 
+      });
     }
 
     const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
     const { formData, amount } = req.body;
 
     // Validate required fields
-    if (!formData || !amount) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!formData) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Form data is missing' 
+      });
     }
+
+    if (!amount) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Amount is missing' 
+      });
+    }
+
+    console.log('Creating customer for:', formData.email);
 
     // Step 1: Create a Stripe Customer
     const customer = await stripe.customers.create({
-      name: `${formData.firstName} ${formData.lastName}`,
+      name: `${formData.firstName || ''} ${formData.lastName || ''}`.trim(),
       email: formData.email || undefined,
       address: {
-        line1: formData.addressLine1,
+        line1: formData.addressLine1 || '',
         line2: formData.addressLine2 || undefined,
-        city: formData.city,
-        state: formData.state,
-        postal_code: formData.zipCode,
+        city: formData.city || '',
+        state: formData.state || '',
+        postal_code: formData.zipCode || '',
         country: 'US',
       },
       metadata: {
-        companyName: formData.companyName,
-        bankName: formData.bankName,
-        accountType: formData.accountType,
-      },
-    });
-
-    // Store bank info in customer metadata (for your records only)
-    await stripe.customers.update(customer.id, {
-      metadata: {
-        ...customer.metadata,
-        accountHolder: `${formData.accountFirstName} ${formData.accountLastName}`,
-        routingNumber: formData.routingNumber,
-        accountNumberLast4: formData.accountNumber.slice(-4),
-        signatureDate: formData.signatureDate,
+        companyName: formData.companyName || '',
+        bankName: formData.bankName || '',
+        accountType: formData.accountType || '',
+        accountHolder: `${formData.accountFirstName || ''} ${formData.accountLastName || ''}`.trim(),
+        routingNumber: formData.routingNumber || '',
+        accountNumberLast4: formData.accountNumber ? formData.accountNumber.slice(-4) : '',
+        signatureDate: formData.signatureDate || '',
         requestedAmount: amount.toString(),
       },
     });
 
-    // Return success with customer ID
-    // You can manually process the payment in Stripe Dashboard
+    console.log('Customer created:', customer.id);
+
+    // Return success
     return res.status(200).json({
       success: true,
       customerId: customer.id,
-      message: `Customer created successfully. Bank account info saved (last 4 digits: ${formData.accountNumber.slice(-4)}). You can process the payment manually in Stripe Dashboard.`,
+      message: `Customer created successfully. Bank account info saved (last 4 digits: ${formData.accountNumber ? formData.accountNumber.slice(-4) : 'N/A'}). You can process the payment manually in Stripe Dashboard.`,
     });
 
   } catch (error) {
-    console.error('Stripe Error:', error);
+    console.error('Stripe Error:', error.message, error.type);
     return res.status(500).json({
+      success: false,
       error: error.message || 'Payment processing failed',
-      type: error.type,
+      type: error.type || 'unknown_error',
     });
   }
-}
+};
