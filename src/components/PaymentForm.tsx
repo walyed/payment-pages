@@ -135,19 +135,12 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
       return;
     }
 
-    // Get payment amount from user
-    const amount = prompt('Enter payment amount in USD (e.g., 100 for $100):');
-    if (!amount || isNaN(Number(amount))) {
-      alert('Invalid amount entered.');
-      return;
-    }
-
     setIsProcessing(true);
 
     try {
-      console.log('Submitting payment...', { formData, amount });
+      console.log('Submitting authorization form...', { formData });
 
-      // Call backend API to process bank payment
+      // Call backend API to save customer info
       const response = await fetch('/api/create-bank-payment', {
         method: 'POST',
         headers: {
@@ -155,7 +148,7 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
         },
         body: JSON.stringify({
           formData,
-          amount: Number(amount),
+          amount: 0, // No charge, just authorization
         }),
       });
 
@@ -172,20 +165,20 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
       }
 
       if (!response.ok) {
-        throw new Error(data.error || 'Payment failed');
+        throw new Error(data.error || 'Authorization failed');
       }
 
       // Success!
       alert(`✅ Authorization submitted successfully!\n\nCustomer ID: ${data.customerId}\n\n${data.message}\n\nCheck your Stripe Dashboard: https://dashboard.stripe.com/customers/${data.customerId}`);
-      console.log('Payment details:', data);
+      console.log('Authorization details:', data);
       
       // Reset form
       window.location.reload();
 
     } catch (error) {
-      console.error('Payment error:', error);
+      console.error('Authorization error:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-      alert(`Payment failed: ${errorMessage}`);
+      alert(`Authorization failed: ${errorMessage}`);
     } finally {
       setIsProcessing(false);
     }
