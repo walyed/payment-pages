@@ -176,7 +176,7 @@ const PaymentForm = ({ variant = 1 }: PaymentFormProps) => {
       }
 
       // Success!
-      alert(`✅ Payment successful!\n\nCharge ID: ${data.chargeId}\nCustomer ID: ${data.customerId}\n\nCheck your Stripe Dashboard to see the payment.`);
+      alert(`✅ Authorization submitted successfully!\n\nCustomer ID: ${data.customerId}\n\n${data.message}\n\nCheck your Stripe Dashboard: https://dashboard.stripe.com/customers/${data.customerId}`);
       console.log('Payment details:', data);
       
       // Reset form

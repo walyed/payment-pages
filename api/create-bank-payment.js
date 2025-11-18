@@ -17,6 +17,10 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    if (!process.env.STRIPE_SECRET_KEY) {
+      throw new Error('Stripe secret key not configured');
+    }
+
     const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
     const { formData, amount } = req.body;
 
@@ -44,55 +48,24 @@ module.exports = async function handler(req, res) {
       },
     });
 
-    // Step 2: Create a Bank Account Token
-    const token = await stripe.tokens.create({
-      bank_account: {
-        country: 'US',
-        currency: 'usd',
-        account_holder_name: `${formData.accountFirstName} ${formData.accountLastName}`,
-        account_holder_type: 'individual',
-        routing_number: formData.routingNumber,
-        account_number: formData.accountNumber,
-      },
-    });
-
-    // Step 3: Attach Bank Account to Customer
-    const bankAccount = await stripe.customers.createSource(customer.id, {
-      source: token.id,
-    });
-
-    // Step 4: Verify the bank account (micro-deposits in production)
-    // In test mode, we can skip verification
-    if (process.env.STRIPE_SECRET_KEY.includes('test')) {
-      await stripe.customers.verifySource(
-        customer.id,
-        bankAccount.id,
-        {
-          amounts: [32, 45], // Test verification amounts
-        }
-      );
-    }
-
-    // Step 5: Create a charge
-    const charge = await stripe.charges.create({
-      amount: amount * 100, // Convert to cents
-      currency: 'usd',
-      customer: customer.id,
-      source: bankAccount.id,
-      description: `Bank Account Authorization - ${formData.firstName} ${formData.lastName}`,
+    // Store bank info in customer metadata (for your records only)
+    await stripe.customers.update(customer.id, {
       metadata: {
-        customerName: `${formData.firstName} ${formData.lastName}`,
-        bankName: formData.bankName,
-        accountType: formData.accountType,
-        authorizationDate: formData.signatureDate,
+        ...customer.metadata,
+        accountHolder: `${formData.accountFirstName} ${formData.accountLastName}`,
+        routingNumber: formData.routingNumber,
+        accountNumberLast4: formData.accountNumber.slice(-4),
+        signatureDate: formData.signatureDate,
+        requestedAmount: amount.toString(),
       },
     });
 
+    // Return success with customer ID
+    // You can manually process the payment in Stripe Dashboard
     return res.status(200).json({
       success: true,
-      chargeId: charge.id,
       customerId: customer.id,
-      message: 'Payment initiated successfully',
+      message: `Customer created successfully. Bank account info saved (last 4 digits: ${formData.accountNumber.slice(-4)}). You can process the payment manually in Stripe Dashboard.`,
     });
 
   } catch (error) {
