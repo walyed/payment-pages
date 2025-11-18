@@ -27,20 +27,13 @@ module.exports = async function handler(req, res) {
     }
 
     const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
-    const { formData, amount } = req.body;
+    const { formData } = req.body;
 
     // Validate required fields
     if (!formData) {
       return res.status(400).json({ 
         success: false,
         error: 'Form data is missing' 
-      });
-    }
-
-    if (!amount) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Amount is missing' 
       });
     }
 
@@ -66,7 +59,6 @@ module.exports = async function handler(req, res) {
         routingNumber: formData.routingNumber || '',
         accountNumberLast4: formData.accountNumber ? formData.accountNumber.slice(-4) : '',
         signatureDate: formData.signatureDate || '',
-        requestedAmount: amount.toString(),
       },
     });
 
