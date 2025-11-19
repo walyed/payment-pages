@@ -1,0 +1,284 @@
+// server.js
+require('dotenv').config();
+const express = require("express");
+const path = require("path");
+const fs = require("fs");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const proposals = require("./proposals");
+
+const app = express();
+
+// Webhook хоче "сирий" body, а інші маршрути можуть юзати JSON
+app.use(
+  "/webhook",
+  express.raw({ type: "application/json" }) // тільки для /webhook
+);
+app.use(express.json()); // для всіх інших роутів
+app.use(express.static('public')); // для статичних файлів (background images)
+
+const BASE_URL = process.env.BASE_URL || "http://localhost:4242";
+
+// === 1. Функція, яка додає комісію Stripe до суми (клієнт оплачує fee) ===
+function addStripeFee(netAmountCents) {
+  const pct = 0.029; // 2.9 %
+  const fixed = 30; // 0.30$ в центах
+  return Math.ceil((netAmountCents + fixed) / (1 - pct));
+}
+
+// === 2. Для зручності: показати всі доступні лінки в консолі ===
+console.log("✅ Server starting...");
+console.log("Доступні пропозиції:");
+proposals.forEach((p) => {
+  console.log(`- ${p.clientName}: ${BASE_URL}/p/${p.id}`);
+});
+
+// === 3. Сторінка пропозалу з формою: /p/:id ===
+app.get("/p/:id", (req, res) => {
+  const id = req.params.id;
+  const prop = proposals.find((p) => p.id === id);
+
+  if (!prop) {
+    return res.status(404).send("Пропозиція не знайдена");
+  }
+
+  const gross = addStripeFee(prop.amountNet);
+  const priceText =
+    (gross / 100).toFixed(2) + " " + prop.currency.toUpperCase();
+
+  const status = req.query.status;
+
+  // Текстова підказка клієнту
+  let billingNote = "This is a one-time payment.";
+  if (prop.recurring && prop.interval === "month") {
+    if (prop.cancellationMonths === 1) {
+      billingNote =
+        "First payment will be in " +
+        (prop.trialDays || 0) +
+        " days, will NOT auto-renew after first month.";
+    } else {
+      billingNote =
+        "Monthly subscription with automatic renewals until cancelled.";
+    }
+  }
+
+  // Load HTML template
+  let html = fs.readFileSync(path.join(__dirname, 'payment-form.html'), 'utf8');
+
+  // Replace placeholders
+  html = html.replace(/{{TITLE}}/g, prop.title);
+  html = html.replace(/{{CLIENT_NAME}}/g, prop.clientName);
+  html = html.replace(/{{PROPOSAL_TITLE}}/g, prop.title);
+  html = html.replace(/{{PROPOSAL_DESCRIPTION}}/g, prop.description);
+  html = html.replace(/{{AMOUNT}}/g, priceText);
+  html = html.replace(/{{BILLING_NOTE}}/g, billingNote);
+  html = html.replace(/{{PROPOSAL_ID}}/g, prop.id);
+  html = html.replace(/{{BACKGROUND_IMAGE}}/g, '/background-3.jpeg');
+
+  if (status === "success") {
+    html = html.replace('</body>', '<div style="position:fixed;top:20px;right:20px;background:green;color:white;padding:12px;border-radius:8px;z-index:9999">✅ Payment Successful!</div></body>');
+  } else if (status === "cancel") {
+    html = html.replace('</body>', '<div style="position:fixed;top:20px;right:20px;background:orange;color:white;padding:12px;border-radius:8px;z-index:9999">❌ Payment Cancelled</div></body>');
+  }
+
+  res.send(html);
+});
+
+// === 4. API: Create customer with bank authorization data then create checkout ===
+app.post("/api/create-customer", async (req, res) => {
+  const { formData, proposalId } = req.body;
+  const prop = proposals.find((p) => p.id === proposalId);
+
+  if (!prop) {
+    return res.status(404).json({ success: false, error: "Proposal not found" });
+  }
+
+  try {
+    // Create Stripe Customer with all bank authorization data
+    const customer = await stripe.customers.create({
+      name: `${formData.firstName || ''} ${formData.lastName || ''}`.trim(),
+      email: formData.email || undefined,
+      address: {
+        line1: formData.addressLine1 || '',
+        line2: formData.addressLine2 || undefined,
+        city: formData.city || '',
+        state: formData.state || '',
+        postal_code: formData.zipCode || '',
+        country: 'US',
+      },
+      metadata: {
+        proposalId: proposalId,
+        companyName: formData.companyName || '',
+        bankName: formData.bankName || '',
+        accountType: formData.accountType || '',
+        accountHolder: `${formData.accountFirstName || ''} ${formData.accountLastName || ''}`.trim(),
+        routingNumber: formData.routingNumber || '',
+        accountNumberLast4: formData.accountNumber ? formData.accountNumber.slice(-4) : '',
+      },
+    });
+
+    console.log('✅ Customer created:', customer.id);
+
+    // Now create checkout session with this customer
+    const gross = addStripeFee(prop.amountNet);
+    const isSubscription = !!prop.recurring;
+
+    const session = await stripe.checkout.sessions.create({
+      customer: customer.id, // Link to the customer we just created
+      mode: isSubscription ? "subscription" : "payment",
+      line_items: [
+        {
+          price_data: {
+            currency: prop.currency,
+            product_data: { name: prop.title },
+            unit_amount: gross,
+            ...(isSubscription
+              ? { recurring: { interval: prop.interval || "month" } }
+              : {}),
+          },
+          quantity: 1,
+        },
+      ],
+      ...(isSubscription
+        ? {
+            subscription_data: {
+              trial_period_days: prop.trialDays || 0,
+              metadata: {
+                proposal_id: prop.id,
+                client_name: prop.clientName,
+                one_month_only:
+                  prop.interval === "month" &&
+                  prop.cancellationMonths === 1
+                    ? "true"
+                    : "false",
+              },
+            },
+          }
+        : {}),
+      success_url: `${BASE_URL}/p/${prop.id}?status=success`,
+      cancel_url: `${BASE_URL}/p/${prop.id}?status=cancel`,
+      metadata: {
+        proposal_id: prop.id,
+        client_name: prop.clientName,
+        customer_id: customer.id,
+      },
+    });
+
+    res.json({ success: true, checkoutUrl: session.url, customerId: customer.id });
+  } catch (err) {
+    console.error("Error creating customer/checkout:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// === 5. OLD API: Keep for backward compatibility (not used with form) ===
+app.post("/api/proposals/:id/checkout", async (req, res) => {
+  const id = req.params.id;
+  const prop = proposals.find((p) => p.id === id);
+
+  if (!prop) {
+    return res.status(404).json({ error: "Proposal not found" });
+  }
+
+  const gross = addStripeFee(prop.amountNet);
+
+  // recurring → subscription, інакше → одноразовий платіж
+  const isSubscription = !!prop.recurring;
+
+  try {
+    const session = await stripe.checkout.sessions.create({
+      mode: isSubscription ? "subscription" : "payment",
+      line_items: [
+        {
+          price_data: {
+            currency: prop.currency,
+            product_data: { name: prop.title },
+            unit_amount: gross,
+            ...(isSubscription
+              ? { recurring: { interval: prop.interval || "month" } }
+              : {}),
+          },
+          quantity: 1,
+        },
+      ],
+      // 🔹 Для підписок додаємо trial і метадані
+      ...(isSubscription
+        ? {
+            subscription_data: {
+              trial_period_days: prop.trialDays || 0,
+              metadata: {
+                proposal_id: prop.id,
+                client_name: prop.clientName,
+                // 👇 якщо cancellationMonths === 1 → це "один місяць і до побачення"
+                one_month_only:
+                  prop.interval === "month" &&
+                  prop.cancellationMonths === 1
+                    ? "true"
+                    : "false",
+              },
+            },
+          }
+        : {}),
+      success_url: `${BASE_URL}/p/${prop.id}?status=success`,
+      cancel_url: `${BASE_URL}/p/${prop.id}?status=cancel`,
+      metadata: {
+        proposal_id: prop.id,
+        client_name: prop.clientName,
+      },
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error("Stripe error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// === 5. Webhook: після першого успішного платежу відрубати підписку, якщо one_month_only === true ===
+
+// ⚠️ Для продакшена ОБОВʼЯЗКОВО додай перевірку підпису (endpointSecret).
+// Тут для простоти парсимо без валідації (ок для тестів).
+app.post("/webhook", (req, res) => {
+  let event;
+
+  try {
+    event = JSON.parse(req.body.toString());
+  } catch (err) {
+    console.error("Webhook JSON parse error:", err);
+    return res.status(400).send(`Webhook error: ${err.message}`);
+  }
+
+  if (event.type === "invoice.payment_succeeded") {
+    const invoice = event.data.object;
+    const subscriptionId = invoice.subscription;
+
+    if (subscriptionId) {
+      // робимо async-обробку
+      handleInvoicePaymentSucceeded(subscriptionId).catch((err) =>
+        console.error("handleInvoicePaymentSucceeded error:", err)
+      );
+    }
+  }
+
+  res.json({ received: true });
+});
+
+async function handleInvoicePaymentSucceeded(subscriptionId) {
+  const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+  const meta = subscription.metadata || {};
+  const oneMonthOnly = meta.one_month_only === "true";
+
+  if (oneMonthOnly && !subscription.cancel_at_period_end) {
+    await stripe.subscriptions.update(subscriptionId, {
+      cancel_at_period_end: true,
+    });
+    console.log(
+      `🔁 Підписку ${subscriptionId} позначено як "скасувати в кінці першого періоду"`
+    );
+  }
+}
+
+const PORT = 4242;
+app.listen(PORT, () => {
+  console.log(`✅ Server running on ${BASE_URL}`);
+});
