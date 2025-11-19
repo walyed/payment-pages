@@ -32,7 +32,7 @@ proposals.forEach((p) => {
   console.log(`- ${p.clientName}: ${BASE_URL}/p/${p.id}`);
 });
 
-// === 3. Сторінка пропозалу з формою: /p/:id ===
+// === 3. Proposal details page: /p/:id ===
 app.get("/p/:id", (req, res) => {
   const id = req.params.id;
   const prop = proposals.find((p) => p.id === id);
@@ -48,6 +48,54 @@ app.get("/p/:id", (req, res) => {
   const status = req.query.status;
 
   // Текстова підказка клієнту
+  let billingNote = "Це одноразовий платіж.";
+  if (prop.recurring && prop.interval === "month") {
+    if (prop.cancellationMonths === 1) {
+      billingNote =
+        "Перший платіж буде через " +
+        (prop.trialDays || 0) +
+        " днів, НЕ буде автоматично продовжуватись після першого місяця.";
+    } else {
+      billingNote =
+        "Щомісячна підписка з автоматичним продовженням до скасування.";
+    }
+  }
+
+  // Load proposal details HTML template
+  let html = fs.readFileSync(path.join(__dirname, 'proposal-details.html'), 'utf8');
+
+  // Replace placeholders
+  html = html.replace(/{{TITLE}}/g, prop.title);
+  html = html.replace(/{{CLIENT_NAME_HEADER}}/g, "Пропозиція для " + prop.clientName);
+  html = html.replace(/{{PROPOSAL_TITLE}}/g, prop.title);
+  html = html.replace(/{{PROPOSAL_DESCRIPTION}}/g, prop.description);
+  html = html.replace(/{{AMOUNT}}/g, priceText);
+  html = html.replace(/{{BILLING_NOTE}}/g, billingNote);
+  html = html.replace(/{{PROPOSAL_ID}}/g, prop.id);
+
+  if (status === "success") {
+    html = html.replace('</body>', '<div style="position:fixed;top:20px;right:20px;background:green;color:white;padding:12px;border-radius:8px;z-index:9999">✅ Payment Successful!</div></body>');
+  } else if (status === "cancel") {
+    html = html.replace('</body>', '<div style="position:fixed;top:20px;right:20px;background:orange;color:white;padding:12px;border-radius:8px;z-index:9999">❌ Payment Cancelled</div></body>');
+  }
+
+  res.send(html);
+});
+
+// === 3b. Payment form page: /pay/:id ===
+app.get("/pay/:id", (req, res) => {
+  const id = req.params.id;
+  const prop = proposals.find((p) => p.id === id);
+
+  if (!prop) {
+    return res.status(404).send("Пропозиція не знайдена");
+  }
+
+  const gross = addStripeFee(prop.amountNet);
+  const priceText =
+    (gross / 100).toFixed(2) + " " + prop.currency.toUpperCase();
+
+  // Текстова підказка клієнту
   let billingNote = "This is a one-time payment.";
   if (prop.recurring && prop.interval === "month") {
     if (prop.cancellationMonths === 1) {
@@ -61,7 +109,7 @@ app.get("/p/:id", (req, res) => {
     }
   }
 
-  // Load HTML template
+  // Load payment form HTML template
   let html = fs.readFileSync(path.join(__dirname, 'payment-form.html'), 'utf8');
 
   // Replace placeholders
@@ -73,12 +121,6 @@ app.get("/p/:id", (req, res) => {
   html = html.replace(/{{BILLING_NOTE}}/g, billingNote);
   html = html.replace(/{{PROPOSAL_ID}}/g, prop.id);
   html = html.replace(/{{BACKGROUND_IMAGE}}/g, '/background-3.jpeg');
-
-  if (status === "success") {
-    html = html.replace('</body>', '<div style="position:fixed;top:20px;right:20px;background:green;color:white;padding:12px;border-radius:8px;z-index:9999">✅ Payment Successful!</div></body>');
-  } else if (status === "cancel") {
-    html = html.replace('</body>', '<div style="position:fixed;top:20px;right:20px;background:orange;color:white;padding:12px;border-radius:8px;z-index:9999">❌ Payment Cancelled</div></body>');
-  }
 
   res.send(html);
 });
@@ -278,7 +320,13 @@ async function handleInvoicePaymentSucceeded(subscriptionId) {
   }
 }
 
-const PORT = 4242;
-app.listen(PORT, () => {
-  console.log(`✅ Server running on ${BASE_URL}`);
-});
+const PORT = process.env.PORT || 4242;
+
+// Export for Vercel serverless
+if (process.env.VERCEL) {
+  module.exports = app;
+} else {
+  app.listen(PORT, () => {
+    console.log(`✅ Server running on ${BASE_URL}`);
+  });
+}
