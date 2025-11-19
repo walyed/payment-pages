@@ -135,7 +135,12 @@ app.post("/api/create-customer", async (req, res) => {
   }
 
   try {
-    // Create Stripe Customer with all bank authorization data
+    console.log('Creating customer for proposal:', proposalId);
+    console.log('BASE_URL:', BASE_URL);
+    console.log('Stripe API Key exists:', !!process.env.STRIPE_SECRET_KEY);
+    console.log('Stripe API Key prefix:', process.env.STRIPE_SECRET_KEY?.substring(0, 10));
+    
+    // Create Stripe Customer with all bank authorization data in metadata
     const customer = await stripe.customers.create({
       name: `${formData.firstName || ''} ${formData.lastName || ''}`.trim(),
       email: formData.email || undefined,
@@ -160,13 +165,20 @@ app.post("/api/create-customer", async (req, res) => {
 
     console.log('✅ Customer created:', customer.id);
 
-    // Now create checkout session with this customer
+    // Now create checkout session - Stripe Checkout will collect bank account
     const gross = addStripeFee(prop.amountNet);
     const isSubscription = !!prop.recurring;
+    
+    const successUrl = `${BASE_URL}/p/${prop.id}?status=success`;
+    const cancelUrl = `${BASE_URL}/p/${prop.id}?status=cancel`;
+    
+    console.log('Success URL:', successUrl);
+    console.log('Cancel URL:', cancelUrl);
 
     const session = await stripe.checkout.sessions.create({
-      customer: customer.id, // Link to the customer we just created
+      customer: customer.id,
       mode: isSubscription ? "subscription" : "payment",
+      payment_method_types: ['us_bank_account'],
       line_items: [
         {
           price_data: {
@@ -180,6 +192,11 @@ app.post("/api/create-customer", async (req, res) => {
           quantity: 1,
         },
       ],
+      payment_method_options: {
+        us_bank_account: {
+          verification_method: 'automatic',
+        },
+      },
       ...(isSubscription
         ? {
             subscription_data: {
@@ -196,8 +213,8 @@ app.post("/api/create-customer", async (req, res) => {
             },
           }
         : {}),
-      success_url: `${BASE_URL}/p/${prop.id}?status=success`,
-      cancel_url: `${BASE_URL}/p/${prop.id}?status=cancel`,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
       metadata: {
         proposal_id: prop.id,
         client_name: prop.clientName,
@@ -205,10 +222,22 @@ app.post("/api/create-customer", async (req, res) => {
       },
     });
 
+    console.log('✅ Checkout session created:', session.id);
+    console.log('Checkout URL:', session.url);
+
+    if (!session.url) {
+      throw new Error('Stripe did not return a checkout URL');
+    }
+
     res.json({ success: true, checkoutUrl: session.url, customerId: customer.id });
   } catch (err) {
     console.error("Error creating customer/checkout:", err);
-    res.status(500).json({ success: false, error: err.message });
+    console.error("Full error details:", JSON.stringify(err, null, 2));
+    res.status(500).json({ 
+      success: false, 
+      error: err.message,
+      details: err.raw ? err.raw.message : 'Unknown error'
+    });
   }
 });
 
